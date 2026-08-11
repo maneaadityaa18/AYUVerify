@@ -1,0 +1,17 @@
+# === AyurVerify Machine Learning Pipeline Dependencies ===
+# This file lists packages required to run data preprocessing, annotations, validation, 
+# GPU diagnostics, training, and inference testing.
+#
+# NOTE: Do NOT use a global `pip install -r requirements-ml.txt` if migrating to a GPU machine,
+# as standard torch/torchvision from PyPI might default to CPU. Follow the setup in docs/ML_SETUP.md.
+
+# Core ML Libraries
+torch>=2.0.0
+torchvision>=0.15.0
+ultralytics>=8.0.0
+opencv-python>=4.7.0
+Pillow>=9.0.0
+numpy>=1.23.0
+psutil>=5.9.0
+pyyaml>=6.0
+matplotlib>=3.5.0
