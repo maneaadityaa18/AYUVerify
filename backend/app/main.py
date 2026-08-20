@@ -14,7 +14,7 @@ import pymongo
 from .config import settings
 from .database import db, seed_database
 from .security import hash_password, verify_password, create_access_token, decode_access_token
-from .models import UserRegister, UserLogin, UserResponse, TokenResponse, BatchCreate, BatchVerify, TransferCreate, TransferReject
+from .models import UserRegister, UserLogin, UserResponse, TokenResponse, BatchCreate, BatchVerify, TransferCreate, TransferReject, IssueReport, ExpertDecision
 
 # Initialize FastAPI App
 app = FastAPI(
@@ -192,17 +192,15 @@ _yolo_model = None
 def get_yolo_model():
     global _yolo_model
     if _yolo_model is None:
-        workspace = r"d:\AYUVerify"
-        weights_path = os.path.join(workspace, "runs", "ayurverify_yolov8n", "weights", "best.pt")
-        if not os.path.exists(weights_path):
-            mpbd_weights = os.path.join(workspace, "runs", "mpbd18_smoke_test", "weights", "best.pt")
-            smoke_weights = os.path.join(workspace, "runs", "detect_smoke_test", "weights", "best.pt")
-            if os.path.exists(mpbd_weights):
-                weights_path = mpbd_weights
-            elif os.path.exists(smoke_weights):
-                weights_path = smoke_weights
-            else:
-                weights_path = "yolov8n.pt"
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        candidate_weights = [
+            os.path.join(project_root, "runs", "ayurverify_class01_exp2", "weights", "best.pt"),
+            os.path.join(project_root, "runs", "ayurverify_yolov8n", "weights", "best.pt"),
+            os.path.join(project_root, "runs", "mpbd18_smoke_test", "weights", "best.pt"),
+            os.path.join(project_root, "runs", "detect_smoke_test", "weights", "best.pt"),
+            os.path.join(project_root, "yolov8n.pt"),
+        ]
+        weights_path = next((path for path in candidate_weights if os.path.exists(path)), "yolov8n.pt")
         _yolo_model = YOLO(weights_path)
     return _yolo_model
 
@@ -230,7 +228,14 @@ def predict_crop(image: UploadFile = File(...), current_user: dict = Depends(get
         raise HTTPException(status_code=500, detail=f"Failed to save uploaded image: {str(e)}")
         
     # Read image to get dimensions
-    import cv2
+    try:
+        import cv2
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="OpenCV is not installed. Install backend requirements and restart the API server."
+        ) from exc
+
     img = cv2.imread(dest_path)
     if img is None:
         if os.path.exists(dest_path):
@@ -253,14 +258,14 @@ def predict_crop(image: UploadFile = File(...), current_user: dict = Depends(get
         
     # Parse YOLO boxes with dynamic fallback class map
     detections = []
-    default_class_names = {0: "Ashwagandha", 1: "Tulshi", 2: "Bel", 3: "Aloevera", 4: "Amla"}
+    class_names = {0: "Aloevera", 1: "Amla"}
     model_names = model.names if hasattr(model, 'names') and model.names else {}
     
     if results and len(results[0].boxes) > 0:
         for box in results[0].boxes:
             cls_id = int(box.cls[0].item())
             conf = float(box.conf[0].item())
-            material_name = model_names.get(cls_id, default_class_names.get(cls_id, f"Material_{cls_id}"))
+            material_name = model_names.get(cls_id, class_names.get(cls_id, f"Material_{cls_id}"))
             xyxy = box.xyxy[0].tolist()
             x1, y1, x2, y2 = map(int, xyxy)
             
@@ -315,7 +320,7 @@ def predict_crop(image: UploadFile = File(...), current_user: dict = Depends(get
         "userId": current_user.get("participantId", "SYSTEM"),
         "imageUrl": f"/uploads/{safe_filename}",
         "material": {
-            "id": material_rec["materialId"] if material_rec else "MAT-004",
+            "id": material_rec["materialId"] if material_rec else "MAT-001",
             "name": material_rec["materialName"] if material_rec else class_name,
             "scientificName": material_rec["scientificName"] if material_rec else "Aloe barbadensis miller"
         },
@@ -338,7 +343,7 @@ def predict_crop(image: UploadFile = File(...), current_user: dict = Depends(get
 # ==========================================
 @app.post("/api/v1/batches")
 def create_batch(req: BatchCreate, current_user: dict = Depends(get_current_user)):
-    # Role gate: Only Collectors can initiate batches (Section 13)
+    # Role gate: Only Collectors can initiate batches
     if current_user["role"] != "COLLECTOR":
         raise HTTPException(status_code=403, detail="Only Collector participants can register new batches.")
         
@@ -363,9 +368,28 @@ def create_batch(req: BatchCreate, current_user: dict = Depends(get_current_user
         {
             "type": "BATCH_CREATED",
             "actor": current_user["participantId"],
+            "actorName": current_user["name"],
+            "actorRole": current_user["role"],
             "date": now_str,
             "location": req.sourceLocation,
-            "detail": f"Batch initialized at {req.sourceLocation} by Collector {current_user['name']}."
+            "detail": f"Batch initialized at {req.sourceLocation} by Collector {current_user['name']} ({current_user['organizationName']})."
+        }
+    ]
+    
+    initial_verification = [
+        {
+            "verifiedBy": current_user["participantId"],
+            "actorName": current_user["name"],
+            "actorRole": current_user["role"],
+            "organizationName": current_user["organizationName"],
+            "date": now_str,
+            "location": req.sourceLocation,
+            "checks": {
+                "visualIntegrity": True,
+                "weightMatch": True,
+                "sealCheck": True
+            },
+            "comments": "Initial collector registration & AI species verification."
         }
     ]
     
@@ -375,12 +399,13 @@ def create_batch(req: BatchCreate, current_user: dict = Depends(get_current_user
         "materialId": req.materialId,
         "createdBy": current_user["participantId"],
         "currentOwner": current_user["participantId"],
-        "status": "VERIFIED",
+        "status": "READY_FOR_TRANSFER",
         "riskLevel": ident.get("riskLevel", "LOW"),
         "createdAt": now_str,
         "sourceLocation": req.sourceLocation,
-        "notes": req.notes,
-        "history": initial_history
+        "notes": req.notes or "",
+        "history": initial_history,
+        "verificationRecords": initial_verification
     }
     
     db["batches"].insert_one(batch_doc)
@@ -389,15 +414,31 @@ def create_batch(req: BatchCreate, current_user: dict = Depends(get_current_user
 
 @app.get("/api/v1/batches")
 def get_user_batches(current_user: dict = Depends(get_current_user)):
-    # Query batches where user is currently holding the batch
-    batches = list(db["batches"].find({"currentOwner": current_user["participantId"]}))
+    participant_id = current_user["participantId"]
+    # Query batches where user is current owner or creator
+    batches = list(db["batches"].find({
+        "$or": [
+            {"currentOwner": participant_id},
+            {"createdBy": participant_id}
+        ]
+    }).sort("createdAt", pymongo.DESCENDING))
+    
     for b in batches:
         b["_id"] = str(b["_id"])
-        # Fetch material details
         mat = db["materials"].find_one({"materialId": b["materialId"]})
         if mat:
             b["material"] = mat["materialName"]
             b["scientificName"] = mat["scientificName"]
+        else:
+            b["material"] = b.get("material", "Unknown Material")
+            b["scientificName"] = b.get("scientificName", "Unknown Taxonomy")
+            
+        owner_user = db["users"].find_one({"participantId": b["currentOwner"]})
+        if owner_user:
+            b["currentOwnerName"] = f"{owner_user['organizationName']} ({b['currentOwner']})"
+        else:
+            b["currentOwnerName"] = b["currentOwner"]
+            
     return batches
 
 @app.get("/api/v1/batches/{batchId}")
@@ -408,29 +449,49 @@ def get_batch_passport(batchId: str, current_user: dict = Depends(get_current_us
         
     batch["_id"] = str(batch["_id"])
     
-    # Load associated material and identification data
     mat = db["materials"].find_one({"materialId": batch["materialId"]})
     ident = db["identifications"].find_one({"identificationId": batch["identificationId"]})
+    if ident:
+        ident["_id"] = str(ident["_id"])
+        
+    creator = db["users"].find_one({"participantId": batch["createdBy"]})
+    owner = db["users"].find_one({"participantId": batch["currentOwner"]})
     
     return {
         "batchId": batch["batchId"],
+        "identificationId": batch["identificationId"],
+        "materialId": batch["materialId"],
         "createdBy": batch["createdBy"],
+        "createdByInfo": {
+            "participantId": creator["participantId"],
+            "name": creator["name"],
+            "organizationName": creator["organizationName"],
+            "location": creator["location"]
+        } if creator else None,
         "currentOwner": batch["currentOwner"],
+        "currentOwnerInfo": {
+            "participantId": owner["participantId"],
+            "name": owner["name"],
+            "organizationName": owner["organizationName"],
+            "role": owner["role"],
+            "location": owner["location"]
+        } if owner else None,
         "status": batch["status"],
-        "riskLevel": batch["riskLevel"],
+        "riskLevel": batch.get("riskLevel", "LOW"),
+        "transferredTo": batch.get("transferredTo"),
+        "transferredToName": batch.get("transferredToName"),
         "createdAt": batch["createdAt"],
         "sourceLocation": batch["sourceLocation"],
-        "notes": batch["notes"],
-        "history": batch["history"],
+        "notes": batch.get("notes", ""),
+        "history": batch.get("history", []),
+        "verificationRecords": batch.get("verificationRecords", []),
+        "reportedIssue": batch.get("reportedIssue"),
         "material": {
             "materialId": mat["materialId"] if mat else batch["materialId"],
             "materialName": mat["materialName"] if mat else "Unknown Material",
             "scientificName": mat["scientificName"] if mat else "Unknown Taxonomy"
         } if mat else None,
-        "identification": {
-            "confidence": ident["confidence"] if ident else 0.9,
-            "imageQuality": ident["imageQuality"] if ident else "GOOD"
-        } if ident else None
+        "identification": ident
     }
 
 @app.post("/api/v1/batches/{batchId}/verify")
@@ -443,49 +504,74 @@ def verify_received_batch(batchId: str, req: BatchVerify, current_user: dict = D
     if batch["currentOwner"] != current_user["participantId"]:
         raise HTTPException(status_code=403, detail="You can only verify batches currently under your custody.")
         
-    # Create verification timeline event
     now_str = datetime.utcnow().isoformat()
+    verification_record = {
+        "verifiedBy": current_user["participantId"],
+        "actorName": current_user["name"],
+        "actorRole": current_user["role"],
+        "organizationName": current_user["organizationName"],
+        "date": now_str,
+        "location": current_user["location"],
+        "checks": {
+            "visualIntegrity": req.visualIntegrity,
+            "weightMatch": req.weightMatch,
+            "sealCheck": req.sealCheck
+        },
+        "comments": req.comments or ""
+    }
+    
     verification_event = {
         "type": "BATCH_VERIFIED",
         "actor": current_user["participantId"],
+        "actorName": current_user["name"],
+        "actorRole": current_user["role"],
         "date": now_str,
         "location": current_user["location"],
-        "detail": f"Physical packaging inspected by {current_user['name']} ({current_user['role']}). Checks - Visual: {req.visualIntegrity}, Weight: {req.weightMatch}, Seals: {req.sealCheck}."
+        "detail": f"Physical packaging inspected by {current_user['name']} ({current_user['role']} at {current_user['organizationName']}). Checks - Visual: {'PASS' if req.visualIntegrity else 'FAIL'}, Weight: {'PASS' if req.weightMatch else 'FAIL'}, Seals: {'PASS' if req.sealCheck else 'FAIL'}. Comments: {req.comments or 'None'}."
     }
+    
+    next_status = "COMPLETED" if current_user["role"] == "MANUFACTURER" else "VERIFIED"
     
     db["batches"].update_one(
         {"batchId": batchId},
         {
-            "$push": {"history": verification_event},
-            "$set": {"status": "VERIFIED"}
+            "$push": {
+                "history": verification_event,
+                "verificationRecords": verification_record
+            },
+            "$set": {"status": next_status}
         }
     )
-    return {"message": "Physical verification successfully logged.", "status": "VERIFIED"}
+    return {"message": "Physical verification successfully logged.", "status": next_status}
 
 # ==========================================
 # 5. Participant Directory & Search
 # ==========================================
 @app.get("/api/v1/participants/search")
-def search_participants(q: str, role: str, current_user: dict = Depends(get_current_user)):
+def search_participants(q: Optional[str] = "", role: Optional[str] = "", current_user: dict = Depends(get_current_user)):
     users_collection = db["users"]
-    query_filter = {
-        "role": role,
-        "$or": [
-            {"participantId": {"$regex": q, "$options": "i"}},
-            {"organizationName": {"$regex": q, "$options": "i"}},
-            {"name": {"$regex": q, "$options": "i"}}
+    query_filter = {}
+    if role:
+        query_filter["role"] = role
+    if q and q.strip():
+        query_filter["$or"] = [
+            {"participantId": {"$regex": q.strip(), "$options": "i"}},
+            {"organizationName": {"$regex": q.strip(), "$options": "i"}},
+            {"name": {"$regex": q.strip(), "$options": "i"}}
         ]
-    }
     
-    results = users_collection.find(query_filter).limit(10)
+    results = users_collection.find(query_filter).limit(20)
     safe_results = []
     for user in results:
-        safe_results.append({
-            "participantId": user["participantId"],
-            "organizationName": user["organizationName"],
-            "role": user["role"],
-            "location": user["location"]
-        })
+        # Exclude self from recipient list
+        if user["participantId"] != current_user["participantId"]:
+            safe_results.append({
+                "participantId": user["participantId"],
+                "name": user["name"],
+                "organizationName": user["organizationName"],
+                "role": user["role"],
+                "location": user["location"]
+            })
     return safe_results
 
 # ==========================================
@@ -501,14 +587,35 @@ def transfer_batch_ownership(batchId: str, req: TransferCreate, current_user: di
     if batch["currentOwner"] != current_user["participantId"]:
         raise HTTPException(status_code=403, detail={"code": "BATCH_NOT_OWNED", "message": "You do not own this batch."})
         
-    # Check if already pending transfer
-    if batch["status"] == "TRANSFER_PENDING":
-        raise HTTPException(status_code=400, detail={"code": "BATCH_NOT_TRANSFERABLE", "message": "Batch is already in a pending transfer transaction."})
+    # Check if transferable (READY_FOR_TRANSFER or VERIFIED)
+    if batch["status"] not in ["READY_FOR_TRANSFER", "VERIFIED"]:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "BATCH_NOT_TRANSFERABLE", "message": f"Batch status is {batch['status']}. Only ready/verified batches can be transferred."}
+        )
         
     # Verify recipient exists
     recipient = db["users"].find_one({"participantId": req.recipientId})
     if not recipient:
         raise HTTPException(status_code=404, detail={"code": "RECIPIENT_NOT_FOUND", "message": "The selected recipient participant does not exist."})
+        
+    # Enforce strict supply-chain order: Collector -> Wholesaler -> Distributor -> Manufacturer
+    SUPPLY_CHAIN_NEXT_ROLE = {
+        "COLLECTOR": "WHOLESALER",
+        "WHOLESALER": "DISTRIBUTOR",
+        "DISTRIBUTOR": "MANUFACTURER",
+    }
+    expected_next_role = SUPPLY_CHAIN_NEXT_ROLE.get(current_user["role"])
+    if not expected_next_role:
+        raise HTTPException(status_code=400, detail={"code": "TRANSFER_NOT_ALLOWED", "message": "This role cannot initiate a supply-chain transfer."})
+    if recipient["role"] != expected_next_role:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "WRONG_NEXT_ROLE",
+                "message": f"Supply-chain order requires transfer to the next role ({expected_next_role}). You selected {recipient['role']} ({req.recipientId})."
+            }
+        )
         
     # Create transfer transaction
     transfer_id = f"TRF-{int(time.time() * 1000) % 100000:05d}"
@@ -519,7 +626,7 @@ def transfer_batch_ownership(batchId: str, req: TransferCreate, current_user: di
         "batchId": batchId,
         "senderId": current_user["participantId"],
         "recipientId": req.recipientId,
-        "note": req.note,
+        "note": req.note or "",
         "status": "PENDING",
         "createdAt": now_str
     }
@@ -528,16 +635,22 @@ def transfer_batch_ownership(batchId: str, req: TransferCreate, current_user: di
     timeline_event = {
         "type": "TRANSFER_REQUESTED",
         "actor": current_user["participantId"],
+        "actorName": current_user["name"],
+        "actorRole": current_user["role"],
         "date": now_str,
         "location": current_user["location"],
-        "detail": f"Transfer initiated to {recipient['organizationName']} ({req.recipientId})."
+        "detail": f"Transfer initiated to {recipient['organizationName']} ({req.recipientId}). Note: {req.note or 'None'}."
     }
     
     db["transfers"].insert_one(transfer_doc)
     db["batches"].update_one(
         {"batchId": batchId},
         {
-            "$set": {"status": "TRANSFER_PENDING"},
+            "$set": {
+                "status": "TRANSFER_PENDING",
+                "transferredTo": req.recipientId,
+                "transferredToName": recipient["organizationName"]
+            },
             "$push": {"history": timeline_event}
         }
     )
@@ -558,16 +671,21 @@ def get_incoming_transfers(current_user: dict = Depends(get_current_user)):
         if batch:
             mat = db["materials"].find_one({"materialId": batch["materialId"]})
             sender = db["users"].find_one({"participantId": t["senderId"]})
+            ident = db["identifications"].find_one({"identificationId": batch["identificationId"]})
             detailed_requests.append({
                 "transferId": t["transferId"],
                 "batchId": t["batchId"],
                 "material": mat["materialName"] if mat else "Unknown Material",
-                "scientificName": mat["scientificName"] if mat else "Unknown",
+                "materialId": batch["materialId"],
+                "scientificName": mat["scientificName"] if mat else "Unknown Taxonomy",
                 "fromId": t["senderId"],
                 "fromOrg": sender["organizationName"] if sender else "Unknown Organization",
-                "confidence": 0.94,
+                "fromName": sender["name"] if sender else "Unknown User",
+                "fromRole": sender["role"] if sender else "Unknown Role",
+                "confidence": ident["confidence"] if ident else 0.94,
                 "riskLevel": batch.get("riskLevel", "LOW"),
-                "date": t["createdAt"]
+                "date": t["createdAt"],
+                "note": t.get("note", "")
             })
     return detailed_requests
 
@@ -595,9 +713,11 @@ def accept_handoff_transfer(transferId: str, current_user: dict = Depends(get_cu
     timeline_event = {
         "type": "TRANSFER_ACCEPTED",
         "actor": current_user["participantId"],
+        "actorName": current_user["name"],
+        "actorRole": current_user["role"],
         "date": now_str,
         "location": current_user["location"],
-        "detail": f"Handoff accepted by {current_user['organizationName']} ({current_user['participantId']})."
+        "detail": f"Handoff accepted by {current_user['organizationName']} ({current_user['participantId']}). Custody transferred."
     }
     
     db["batches"].update_one(
@@ -605,12 +725,13 @@ def accept_handoff_transfer(transferId: str, current_user: dict = Depends(get_cu
         {
             "$set": {
                 "currentOwner": current_user["participantId"],
-                "status": "VERIFIED"
+                "status": "TRANSFER_ACCEPTED"
             },
+            "$unset": {"transferredTo": 1, "transferredToName": 1},
             "$push": {"history": timeline_event}
         }
     )
-    return {"message": "Handoff successfully accepted. Ownership updated.", "status": "VERIFIED"}
+    return {"message": "Handoff successfully accepted. Custody transferred. Physical verification is now pending.", "status": "TRANSFER_ACCEPTED"}
 
 @app.post("/api/v1/transfers/{transferId}/reject")
 def reject_handoff_transfer(transferId: str, req: TransferReject, current_user: dict = Depends(get_current_user)):
@@ -632,23 +753,26 @@ def reject_handoff_transfer(transferId: str, req: TransferReject, current_user: 
         {"$set": {"status": "REJECTED", "completedAt": now_str, "rejectionReason": req.reason}}
     )
     
-    # Revert batch to verified state under original owner, log rejection reason
+    # Mark batch as rejected, log rejection reason
     timeline_event = {
         "type": "TRANSFER_REJECTED",
         "actor": current_user["participantId"],
+        "actorName": current_user["name"],
+        "actorRole": current_user["role"],
         "date": now_str,
         "location": current_user["location"],
-        "detail": f"Handoff rejected by {current_user['organizationName']}. Reason: {req.reason}"
+        "detail": f"Handoff rejected by {current_user['organizationName']} ({current_user['participantId']}). Reason: {req.reason}"
     }
     
     db["batches"].update_one(
         {"batchId": transfer["batchId"]},
         {
-            "$set": {"status": "VERIFIED"},
+            "$set": {"status": "REJECTED"},
+            "$unset": {"transferredTo": 1, "transferredToName": 1},
             "$push": {"history": timeline_event}
         }
     )
-    return {"message": "Handoff successfully rejected. Custody remains with sender.", "status": "VERIFIED"}
+    return {"message": "Handoff successfully rejected. Batch marked as rejected.", "status": "REJECTED"}
 
 # ==========================================
 # 7. QR / Public Batch Lookup
@@ -710,6 +834,11 @@ def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
             "pendingTransfers": pending_transfers,
             "rejectedTransfers": rejected_transfers
         }
+    elif current_user["role"] == "EXPERT":
+        pending_reviews = db["batches"].count_documents({"status": "PENDING_EXPERT_REVIEW"})
+        return {
+            "pendingReviews": pending_reviews
+        }
     else:
         # Wholesaler / Distributor / Manufacturer
         incoming_transfers = db["transfers"].count_documents({
@@ -735,3 +864,148 @@ def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
             "pendingVerification": pending_verification,
             "outgoingTransfers": outgoing_transfers
         }
+
+# ==========================================
+# 9. Expert Botanical Review APIs
+# ==========================================
+@app.post("/api/v1/batches/{batchId}/report-issue")
+def report_batch_issue(batchId: str, req: IssueReport, current_user: dict = Depends(get_current_user)):
+    batch = db["batches"].find_one({"batchId": batchId})
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch passport not found.")
+        
+    now_str = datetime.utcnow().isoformat()
+    
+    if current_user["role"] in ["COLLECTOR", "EXPERT"]:
+        raise HTTPException(status_code=403, detail="Only supply chain custodians can report identification issues.")
+        
+    timeline_event = {
+        "type": "ISSUE_REPORTED",
+        "actor": current_user["participantId"],
+        "actorName": current_user["name"],
+        "actorRole": current_user["role"],
+        "date": now_str,
+        "location": current_user["location"],
+        "detail": f"Identification issue reported by {current_user['name']} ({current_user['role']}). Reason: {req.reason}. Description: {req.description}."
+    }
+    
+    db["batches"].update_one(
+        {"batchId": batchId},
+        {
+            "$set": {
+                "status": "PENDING_EXPERT_REVIEW",
+                "reportedIssue": {
+                    "reason": req.reason,
+                    "description": req.description,
+                    "reportedBy": current_user["participantId"],
+                    "reportedByName": current_user["name"],
+                    "reportedByRole": current_user["role"],
+                    "createdAt": now_str
+                }
+            },
+            "$push": {"history": timeline_event}
+        }
+    )
+    return {"message": "Batch flagged for expert review.", "status": "PENDING_EXPERT_REVIEW"}
+
+@app.get("/api/v1/expert/reviews")
+def get_expert_reviews(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in ["EXPERT", "ADMIN"]:
+        raise HTTPException(status_code=403, detail="Access denied. Expert role required.")
+        
+    batches = list(db["batches"].find({"status": "PENDING_EXPERT_REVIEW"}))
+    detailed_reviews = []
+    for b in batches:
+        b["_id"] = str(b["_id"])
+        mat = db["materials"].find_one({"materialId": b["materialId"]})
+        ident = db["identifications"].find_one({"identificationId": b["identificationId"]})
+        if ident:
+            ident["_id"] = str(ident["_id"])
+            
+        detailed_reviews.append({
+            "batchId": b["batchId"],
+            "materialName": mat["materialName"] if mat else "Unknown Material",
+            "scientificName": mat["scientificName"] if mat else "Unknown",
+            "status": b["status"],
+            "reportedIssue": b.get("reportedIssue"),
+            "identification": ident,
+            "createdAt": b["createdAt"]
+        })
+    return detailed_reviews
+
+@app.get("/api/v1/expert/reviews/{batchId}")
+def get_expert_review_detail(batchId: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in ["EXPERT", "ADMIN"]:
+        raise HTTPException(status_code=403, detail="Access denied. Expert role required.")
+        
+    batch = db["batches"].find_one({"batchId": batchId})
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch passport not found.")
+        
+    batch["_id"] = str(batch["_id"])
+    mat = db["materials"].find_one({"materialId": batch["materialId"]})
+    ident = db["identifications"].find_one({"identificationId": batch["identificationId"]})
+    if ident:
+        ident["_id"] = str(ident["_id"])
+        
+    return {
+        "batchId": batch["batchId"],
+        "createdBy": batch["createdBy"],
+        "currentOwner": batch["currentOwner"],
+        "status": batch["status"],
+        "riskLevel": batch["riskLevel"],
+        "createdAt": batch["createdAt"],
+        "sourceLocation": batch["sourceLocation"],
+        "notes": batch.get("notes"),
+        "history": batch["history"],
+        "reportedIssue": batch.get("reportedIssue"),
+        "material": {
+            "materialId": mat["materialId"] if mat else batch["materialId"],
+            "materialName": mat["materialName"] if mat else "Unknown Material",
+            "scientificName": mat["scientificName"] if mat else "Unknown Taxonomy"
+        } if mat else None,
+        "identification": ident
+    }
+
+@app.post("/api/v1/expert/reviews/{batchId}/decision")
+def submit_expert_decision(batchId: str, req: ExpertDecision, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in ["EXPERT", "ADMIN"]:
+        raise HTTPException(status_code=403, detail="Access denied. Expert role required.")
+        
+    batch = db["batches"].find_one({"batchId": batchId})
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch passport not found.")
+        
+    now_str = datetime.utcnow().isoformat()
+    
+    if req.decision == "APPROVE":
+        next_status = "VERIFIED"
+        timeline_event = {
+            "type": "EXPERT_VERIFIED",
+            "actor": current_user["participantId"],
+            "actorName": current_user["name"],
+            "actorRole": current_user["role"],
+            "date": now_str,
+            "location": current_user["location"],
+            "detail": f"Botanical identification issue reviewed and APPROVED by Expert {current_user['name']}. Notes: {req.notes or 'None'}."
+        }
+    else:
+        next_status = "REJECTED"
+        timeline_event = {
+            "type": "EXPERT_REJECTED",
+            "actor": current_user["participantId"],
+            "actorName": current_user["name"],
+            "actorRole": current_user["role"],
+            "date": now_str,
+            "location": current_user["location"],
+            "detail": f"Botanical identification issue reviewed and REJECTED by Expert {current_user['name']}. Reason: {req.notes or 'None'}."
+        }
+        
+    db["batches"].update_one(
+        {"batchId": batchId},
+        {
+            "$set": {"status": next_status},
+            "$push": {"history": timeline_event}
+        }
+    )
+    return {"message": f"Expert review decision ({req.decision}) recorded successfully.", "status": next_status}

@@ -161,14 +161,9 @@ export const AppLayout: React.FC = () => {
               {currentRole.substring(0, 3)}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-semibold text-slate-900 truncate">Demo Participant</p>
-              <p className="text-[10px] text-slate-500 font-medium tracking-wide truncate">
-                {currentRole === 'COLLECTOR' && 'COL-0047'}
-                {currentRole === 'WHOLESALER' && 'WHO-0124'}
-                {currentRole === 'DISTRIBUTOR' && 'DIS-0031'}
-                {currentRole === 'MANUFACTURER' && 'MAN-0018'}
-                {currentRole === 'EXPERT' && 'EXP-0001'}
-                {currentRole === 'ADMIN' && 'ADM-0001'}
+              <p className="text-xs font-semibold text-slate-900 truncate">{user?.name || 'Demo Participant'}</p>
+              <p className="text-[10px] text-slate-500 font-medium tracking-wide font-mono truncate">
+                {user?.participantId || user?.email || currentRole}
               </p>
             </div>
           </div>

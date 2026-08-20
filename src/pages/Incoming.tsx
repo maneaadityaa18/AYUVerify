@@ -39,6 +39,7 @@ export const Incoming: React.FC = () => {
   const { data: requests = [], isLoading } = useQuery<TransferRequest[]>({
     queryKey: ['incomingTransfers'],
     queryFn: () => transferService.getIncomingTransfers(),
+    refetchInterval: 8000,
   });
 
   // Mutation: Accept transfer request

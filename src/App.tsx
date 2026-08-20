@@ -8,9 +8,9 @@ import { router } from './routes';
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      refetchOnWindowFocus: false,
+      refetchOnWindowFocus: true,
       retry: 1,
-      staleTime: 30000, // 30 seconds staleTime for standard feeds
+      staleTime: 8000,
     },
   },
 });

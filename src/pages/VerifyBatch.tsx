@@ -18,6 +18,7 @@ export const VerifyBatch: React.FC = () => {
   const [visualIntegrity, setVisualIntegrity] = useState(false);
   const [weightMatch, setWeightMatch] = useState(false);
   const [sealCheck, setSealCheck] = useState(false);
+  const [comments, setComments] = useState('');
 
   const verifyMutation = useMutation({
     mutationFn: () =>
@@ -25,6 +26,7 @@ export const VerifyBatch: React.FC = () => {
         visualIntegrity,
         weightMatch,
         sealCheck,
+        comments,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['batch', batchId] });
@@ -104,6 +106,20 @@ export const VerifyBatch: React.FC = () => {
                 <span className="text-[10px] text-slate-400 font-medium mt-0.5">Seals are untampered, and QR code label resolves correctly.</span>
               </div>
             </label>
+            
+            <div className="w-full flex flex-col gap-1.5 text-left p-3 border-t border-slate-100/50 mt-2">
+              <label htmlFor="comments" className="text-xs font-semibold text-slate-700">
+                Comments / Physical Observations
+              </label>
+              <textarea
+                id="comments"
+                placeholder="E.g., visual inspection looks correct, seals are intact, weight matches..."
+                value={comments}
+                onChange={(e) => setComments(e.target.value)}
+                className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-ayur-green-500 min-h-[80px]"
+                disabled={verifyMutation.isPending}
+              />
+            </div>
           </div>
 
           <div className="border-t border-slate-100 pt-5 flex gap-3 justify-end">

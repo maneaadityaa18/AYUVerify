@@ -36,6 +36,15 @@ class BatchVerify(BaseModel):
     visualIntegrity: bool
     weightMatch: bool
     sealCheck: bool
+    comments: Optional[str] = ""
+
+class IssueReport(BaseModel):
+    reason: str = Field(..., min_length=2, max_length=100)
+    description: str = Field(..., min_length=5, max_length=1000)
+
+class ExpertDecision(BaseModel):
+    decision: str = Field(..., pattern="^(APPROVE|REJECT)$")
+    notes: Optional[str] = ""
 
 class TransferCreate(BaseModel):
     recipientId: str

@@ -25,8 +25,17 @@ export const batchService = {
     visualIntegrity: boolean;
     weightMatch: boolean;
     sealCheck: boolean;
+    comments?: string;
   }) {
     const response = await api.post(`/batches/${batchId}/verify`, verificationData);
+    return response.data;
+  },
+
+  async reportIssue(batchId: string, issueData: {
+    reason: string;
+    description: string;
+  }) {
+    const response = await api.post(`/batches/${batchId}/report-issue`, issueData);
     return response.data;
   },
 

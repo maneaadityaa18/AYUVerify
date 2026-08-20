@@ -18,7 +18,7 @@ interface Batch {
   scientificName: string;
   createdBy: string;
   currentOwner: string;
-  status: 'VERIFIED' | 'TRANSFER_PENDING' | 'TRANSFER_REJECTED';
+  status: 'READY_FOR_TRANSFER' | 'TRANSFER_PENDING' | 'VERIFIED' | 'TRANSFER_ACCEPTED' | 'COMPLETED' | 'REJECTED' | 'PENDING_EXPERT_REVIEW';
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
   createdAt: string;
   sourceLocation: string;
@@ -45,6 +45,7 @@ export const Batches: React.FC = () => {
   const { data: batches = [] } = useQuery<Batch[]>({
     queryKey: ['batches'],
     queryFn: () => batchService.getBatches(),
+    refetchInterval: 15000,
   });
 
   // React Query: Create batch mutation
@@ -60,6 +61,7 @@ export const Batches: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['dashboardSummary'] });
       showToast(`Batch created successfully! ID: ${data.batchId}`, 'success');
       handleCloseModal();
+      navigate(`/app/batches/${data.batchId}`);
     },
     onError: (err) => {
       const friendlyMsg = getFriendlyErrorMessage(err);
@@ -94,7 +96,7 @@ export const Batches: React.FC = () => {
 
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     // Form Validation Section 81.5
     const validationErrors: Record<string, string> = {};
     if (sourceLocation.trim().length < 2) {
@@ -176,7 +178,7 @@ export const Batches: React.FC = () => {
             <option value="ALL">All Statuses</option>
             <option value="VERIFIED">Verified</option>
             <option value="TRANSFER_PENDING">Pending Handoff</option>
-            <option value="TRANSFER_REJECTED">Rejected</option>
+            <option value="REJECTED">Rejected</option>
           </select>
           <select
             value={sortBy}
@@ -204,7 +206,7 @@ export const Batches: React.FC = () => {
                     "inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border",
                     batch.status === 'VERIFIED' && 'bg-emerald-50 text-emerald-700 border-emerald-100',
                     batch.status === 'TRANSFER_PENDING' && 'bg-amber-50 text-amber-700 border-amber-100',
-                    batch.status === 'TRANSFER_REJECTED' && 'bg-rose-50 text-rose-700 border-rose-100'
+                    batch.status === 'REJECTED' && 'bg-rose-50 text-rose-700 border-rose-100'
                   )}
                 >
                   {batch.status.replace('_', ' ')}

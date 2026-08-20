@@ -6,4 +6,5 @@ python-dotenv==1.0.1
 pyjwt==2.9.0
 bcrypt==4.2.0
 python-multipart==0.0.9
+opencv-python-headless==4.10.0.84
 email-validator
